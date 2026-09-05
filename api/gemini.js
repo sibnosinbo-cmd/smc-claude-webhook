@@ -9,7 +9,10 @@ export default async function handler(req, res) {
       });
     }
 
-    // Get SMC V4 automatically
+    // ==============================
+    // 1. Get SMC V4 automatically
+    // ==============================
+
     const host = req.headers.host;
 
     const smcResponse = await fetch(
@@ -26,64 +29,101 @@ export default async function handler(req, res) {
       });
     }
 
+    // ==============================
+    // 2. Prompt
+    // ==============================
+
     const prompt = `
-You are a professional Smart Money Concepts (SMC) trading analyst.
+You are an expert Smart Money Concepts trading analyst.
 
-Analyze the following XAU/USD 5-minute SMC V4 data.
+Analyze this XAU/USD 5-minute SMC V4 data.
 
-RULES:
-- Use ONLY the supplied data.
-- Do not invent market information.
-- Do not guarantee profit.
-- If signals conflict, prefer WAIT.
+IMPORTANT RULES:
+
+- Use ONLY the data provided.
+- Never invent market data.
+- Never guarantee profit.
+- If the setup is conflicting or weak, choose WAIT.
 - Absence of displacement is a warning.
 - Consider BOS, CHOCH, liquidity sweep, FVG, Order Block and Premium/Discount.
 - Be conservative.
+- This is analysis for research/testing, not financial advice.
 
 SMC V4 DATA:
+
 ${JSON.stringify(smc, null, 2)}
 
-Return ONLY valid JSON:
+Give a professional trading analysis.
 
-{
-  "signal": "BUY | SELL | WAIT",
-  "confidence": 0,
-  "bias": "BULLISH | BEARISH | NEUTRAL",
-  "market_quality": "A | B | C | D",
-  "entry": null,
-  "stop_loss": null,
-  "take_profit": null,
-  "risk_reward": null,
-  "reasons": [],
-  "warnings": [],
-  "analysis": ""
-}
+Your answer MUST contain:
+
+SIGNAL: BUY, SELL, or WAIT
+
+CONFIDENCE: number from 0 to 100
+
+BIAS: BULLISH, BEARISH, or NEUTRAL
+
+MARKET QUALITY: A, B, C, or D
+
+ENTRY: price or N/A
+
+STOP LOSS: price or N/A
+
+TAKE PROFIT: price or N/A
+
+RISK REWARD: number or N/A
+
+REASONS:
+- reason 1
+- reason 2
+- reason 3
+
+WARNINGS:
+- warning 1
+- warning 2
+
+ANALYSIS:
+A short professional explanation of the setup.
 `;
+
+    // ==============================
+    // 3. OpenRouter
+    // ==============================
 
     const response = await fetch(
       "https://openrouter.ai/api/v1/chat/completions",
       {
         method: "POST",
+
         headers: {
           "Authorization": `Bearer ${apiKey}`,
           "Content-Type": "application/json",
           "HTTP-Referer": "https://smc-claude-webhook.vercel.app",
           "X-Title": "SMC V4 Analyzer"
         },
+
         body: JSON.stringify({
           model: "openrouter/free",
+
           messages: [
             {
               role: "user",
               content: prompt
             }
           ],
-          temperature: 0.2
+
+          temperature: 0.2,
+
+          max_tokens: 1000
         })
       }
     );
 
     const data = await response.json();
+
+    // ==============================
+    // 4. OpenRouter error
+    // ==============================
 
     if (!response.ok) {
       return res.status(response.status).json({
@@ -93,80 +133,71 @@ Return ONLY valid JSON:
       });
     }
 
-    const text = data?.choices?.[0]?.message?.content;
+    // ==============================
+    // 5. Extract AI response
+    // ==============================
+
+    const text =
+      data?.choices?.[0]?.message?.content;
 
     if (!text) {
       return res.status(500).json({
         success: false,
-        error: "OpenRouter returned no response",
+        error: "OpenRouter returned no text",
         raw: data
       });
-  
-    let analysis;
-
-try {
-  let cleaned = text
-    .replace(/```json/gi, "")
-    .replace(/```/g, "")
-    .trim();
-
-  const start = cleaned.indexOf("{");
-  const end = cleaned.lastIndexOf("}");
-
-  if (start !== -1 && end !== -1 && end > start) {
-    cleaned = cleaned.substring(start, end + 1);
-  }
-
-  analysis = JSON.parse(cleaned);
-
-} catch (error) {
-  return res.status(200).json({
-    success: true,
-    system: "XAU/USD → Twelve Data → SMC V4 → OpenRouter",
-    model: "openrouter/free",
-    ai_raw_response: text,
-    analysis: {
-      signal: "WAIT",
-      confidence: 0,
-      bias: "NEUTRAL",
-      market_quality: "D",
-      entry: null,
-      stop_loss: null,
-      take_profit: null,
-      risk_reward: null,
-      reasons: [],
-      warnings: ["AI response could not be parsed as JSON"],
-      analysis: text
-    }
-  });
-}
-      analysis = {
-        signal: "WAIT",
-        confidence: 0,
-        bias: "NEUTRAL",
-        market_quality: "D",
-        entry: null,
-        stop_loss: null,
-        take_profit: null,
-        risk_reward: null,
-        reasons: [],
-        warnings: ["AI returned invalid JSON"],
-        analysis: text
-      };
     }
 
-    return res.status(200).json({
-      success: true,
-      system: "XAU/USD → Twelve Data → SMC V4 → OpenRouter",
-      model: "openrouter/free",
-      timestamp: new Date().toISOString(),
-      analysis
-    });
+    // ==============================
+    // 6. Try JSON first
+    // ==============================
 
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-}
+    let parsed = null;
+
+    try {
+      let cleaned = text.trim();
+
+      cleaned = cleaned
+        .replace(/```json/gi, "")
+        .replace(/```/g, "")
+        .trim();
+
+      const start = cleaned.indexOf("{");
+      const end = cleaned.lastIndexOf("}");
+
+      if (start !== -1 && end !== -1 && end > start) {
+        const jsonText = cleaned.substring(
+          start,
+          end + 1
+        );
+
+        parsed = JSON.parse(jsonText);
+      }
+    } catch (error) {
+      parsed = null;
+    }
+
+    // ==============================
+    // 7. If JSON worked
+    // ==============================
+
+    if (parsed) {
+      return res.status(200).json({
+        success: true,
+
+        system:
+          "XAU/USD → Twelve Data → SMC V4 → OpenRouter",
+
+        model:
+          data?.model || "openrouter/free",
+
+        timestamp:
+          new Date().toISOString(),
+
+        analysis: parsed
+      });
+    }
+
+    // ==============================
+    // 8. If NOT JSON
+    // Return the raw AI text
