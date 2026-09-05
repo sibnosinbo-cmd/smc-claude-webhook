@@ -1,84 +1,87 @@
 export default async function handler(req, res) {
-  // السماح بـ GET و POST
-  if (req.method !== "GET" && req.method !== "POST") {
-    return res.status(405).json({
-      success: false,
-      error: "Method not allowed"
-    });
-  }
-
   try {
     const apiKey = process.env.OPENROUTER_API_KEY;
 
     if (!apiKey) {
       return res.status(500).json({
         success: false,
-        error: "OPENROUTER_API_KEY غير موجود في Vercel"
+        error: "OPENROUTER_API_KEY is missing"
       });
     }
 
-    // جلب تحليل SMC V4
-    const baseUrl =
-      process.env.VERCEL_URL
-        ? `https://${process.env.VERCEL_URL}`
-        : "https://smc-claude-webhook.vercel.app";
+    // SMC V4 endpoint
+    const smcUrl = "https://smc-claude-webhook.vercel.app/api/analyze-v4";
 
-    const smcResponse = await fetch(`${baseUrl}/api/analyze-v4`);
+    const smcResponse = await fetch(smcUrl);
+
+    const smcRaw = await smcResponse.text();
 
     if (!smcResponse.ok) {
-      const errorText = await smcResponse.text();
-
       return res.status(500).json({
         success: false,
-        error: "فشل في جلب تحليل SMC V4",
-        details: errorText
+        error: "SMC V4 request failed",
+        status: smcResponse.status,
+        details: smcRaw
       });
     }
 
-    const smcData = await smcResponse.json();
+    let smcData;
 
-    // البيانات التي سنرسلها إلى الذكاء الاصطناعي
+    try {
+      smcData = JSON.parse(smcRaw);
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: "SMC V4 did not return valid JSON",
+        details: smcRaw.substring(0, 1000)
+      });
+    }
+
+    // Send SMC analysis to OpenRouter
     const prompt = `
-أنت محلل تداول محترف متخصص في Smart Money Concepts (SMC).
+You are a professional Smart Money Concepts (SMC) trading analyst.
 
-حلل بيانات XAU/USD التالية:
+Analyze the following XAU/USD 5-minute SMC data:
 
 ${JSON.stringify(smcData, null, 2)}
 
-أعطني تحليلًا محافظًا وواضحًا.
+IMPORTANT RULES:
 
-القواعد:
-- لا تخترع بيانات غير موجودة.
-- إذا كانت المعطيات غير كافية، SIGNAL يجب أن يكون WAIT.
-- لا تعطِ BUY أو SELL لمجرد وجود عامل واحد.
-- انتبه إلى Liquidity Sweep و BOS و CHOCH و FVG و Order Block و Premium/Discount.
-- إذا لم يوجد Displacement واضح، خفّض الثقة.
-- لا تضمن الربح.
+1. Be conservative.
+2. Never guarantee profit.
+3. Do not invent market data.
+4. If the setup is unclear, return WAIT.
+5. Consider structure, BOS, CHOCH, liquidity sweep, displacement, FVG, Order Block and Premium/Discount.
+6. A liquidity sweep alone is NOT enough for a trade.
+7. If displacement is false, reduce confidence.
+8. If BUY and SELL evidence are close, prefer WAIT.
+9. Only provide an entry, stop loss and take profit when a valid setup exists.
+10. Use the exact price levels available in the SMC data when possible.
 
-أجب بهذا الشكل بالضبط:
+Return ONLY this format:
 
-SIGNAL: BUY أو SELL أو WAIT
-CONFIDENCE: رقم من 0 إلى 100
-BIAS: BULLISH أو BEARISH أو NEUTRAL
-MARKET QUALITY: A أو B أو C أو D
-ENTRY: رقم أو NONE
-STOP LOSS: رقم أو NONE
-TAKE PROFIT: رقم أو NONE
-RISK REWARD: رقم أو NONE
+SIGNAL: BUY / SELL / WAIT
+CONFIDENCE: 0-100
+BIAS: BULLISH / BEARISH / NEUTRAL
+MARKET QUALITY: A / B / C / D
+ENTRY: price or NONE
+STOP LOSS: price or NONE
+TAKE PROFIT: price or NONE
+RISK REWARD: value or NONE
+
 REASONS:
-- السبب الأول
-- السبب الثاني
-- السبب الثالث
+- reason
+- reason
+- reason
 
 WARNINGS:
-- التحذير الأول
-- التحذير الثاني
+- warning
+- warning
 
 ANALYSIS:
-شرح مختصر للتحليل.
+short professional explanation
 `;
 
-    // إرسال البيانات إلى OpenRouter
     const aiResponse = await fetch(
       "https://openrouter.ai/api/v1/chat/completions",
       {
@@ -95,7 +98,7 @@ ANALYSIS:
             {
               role: "system",
               content:
-                "You are a conservative professional SMC trading analyst."
+                "You are a conservative professional SMC trading analyst. Follow the requested output format exactly."
             },
             {
               role: "user",
@@ -108,49 +111,47 @@ ANALYSIS:
       }
     );
 
-    const aiText = await aiResponse.text();
+    const aiRaw = await aiResponse.text();
 
     if (!aiResponse.ok) {
       return res.status(500).json({
         success: false,
-        error: "OpenRouter API Error",
+        error: "OpenRouter request failed",
         status: aiResponse.status,
-        details: aiText
+        details: aiRaw
       });
     }
 
-    // تحويل رد OpenRouter إلى JSON
     let aiData;
 
     try {
-      aiData = JSON.parse(aiText);
-    } catch {
+      aiData = JSON.parse(aiRaw);
+    } catch (error) {
       return res.status(500).json({
         success: false,
-        error: "OpenRouter returned invalid response",
-        raw: aiText
+        error: "OpenRouter returned invalid JSON",
+        details: aiRaw.substring(0, 2000)
       });
     }
 
-    const content = aiData?.choices?.[0]?.message?.content;
+    const message = aiData?.choices?.[0]?.message;
+    let analysis = message?.content;
 
-    // حماية من crash إذا كان content ليس string
-    let analysisText = "";
-
-    if (typeof content === "string") {
-      analysisText = content;
-    } else if (Array.isArray(content)) {
-      analysisText = content
+    // Handle different possible OpenRouter content formats
+    if (Array.isArray(analysis)) {
+      analysis = analysis
         .map(item => {
           if (typeof item === "string") return item;
           return item?.text || "";
         })
         .join("\n");
-    } else if (content != null) {
-      analysisText = String(content);
     }
 
-    if (!analysisText.trim()) {
+    if (analysis !== null && analysis !== undefined) {
+      analysis = String(analysis);
+    }
+
+    if (!analysis || !analysis.trim()) {
       return res.status(500).json({
         success: false,
         error: "AI returned empty analysis",
@@ -158,23 +159,27 @@ ANALYSIS:
       });
     }
 
-    // النتيجة النهائية
     return res.status(200).json({
       success: true,
       system: "XAU/USD → Twelve Data → SMC V4 → OpenRouter",
       model: "openrouter/free",
       timestamp: new Date().toISOString(),
 
+      signal_source: {
+        analyzer: "SMC Analyzer V4",
+        timeframe: "5min"
+      },
+
       smc: smcData,
 
-      analysis: analysisText,
+      analysis: analysis.trim(),
 
       disclaimer:
-        "تحليل آلي لأغراض البحث والاختبار فقط، وليس نصيحة مالية."
+        "Algorithmic SMC analysis for research and backtesting only. Not financial advice."
     });
 
   } catch (error) {
-    console.error("GEMINI/OPENROUTER ERROR:", error);
+    console.error("SMC AI ERROR:", error);
 
     return res.status(500).json({
       success: false,
@@ -182,4 +187,4 @@ ANALYSIS:
       message: error?.message || String(error)
     });
   }
-      }
+}
