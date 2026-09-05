@@ -1,12 +1,13 @@
 export default async function handler(req, res) {
   try {
-    // ==============================
-    // CONFIG
-    // ==============================
+    // =========================================================
+    // SMC ANALYZER V2
+    // XAU/USD - 5 MINUTES
+    // =========================================================
 
     const SYMBOL = "XAU/USD";
     const INTERVAL = "5min";
-    const OUTPUT_SIZE = 200;
+    const OUTPUT_SIZE = 300;
 
     const API_KEY = process.env.TWELVE_DATA_API_KEY;
 
@@ -17,9 +18,9 @@ export default async function handler(req, res) {
       });
     }
 
-    // ==============================
-    // GET MARKET DATA
-    // ==============================
+    // =========================================================
+    // 1. GET MARKET DATA
+    // =========================================================
 
     const url =
       "https://api.twelvedata.com/time_series" +
@@ -38,84 +39,110 @@ export default async function handler(req, res) {
       });
     }
 
-    if (!marketData.values || marketData.values.length < 20) {
+    if (!Array.isArray(marketData.values) || marketData.values.length < 50) {
       return res.status(500).json({
         success: false,
         error: "Not enough candle data"
       });
     }
 
-    // Twelve Data returns newest first.
-    // SMC calculations are easier oldest -> newest.
+    // Oldest -> newest
     const candles = marketData.values
-      .map(c => ({
+      .map((c) => ({
         datetime: c.datetime,
         open: Number(c.open),
         high: Number(c.high),
         low: Number(c.low),
         close: Number(c.close)
       }))
+      .filter(
+        (c) =>
+          Number.isFinite(c.open) &&
+          Number.isFinite(c.high) &&
+          Number.isFinite(c.low) &&
+          Number.isFinite(c.close)
+      )
       .reverse();
 
-    // ==============================
-    // HELPERS
-    // ==============================
+    // =========================================================
+    // 2. HELPERS
+    // =========================================================
 
-    const round = (value, decimals = 2) => {
-      const factor = Math.pow(10, decimals);
+    const round = (value, decimals = 5) => {
+      if (value === null || value === undefined) return null;
+
+      const factor = 10 ** decimals;
       return Math.round(value * factor) / factor;
     };
 
-    const last = arr => arr[arr.length - 1];
+    const last = (arr) =>
+      arr.length ? arr[arr.length - 1] : null;
 
-    const highest = (arr, key) =>
-      Math.max(...arr.map(x => x[key]));
+    const body = (c) =>
+      Math.abs(c.close - c.open);
 
-    const lowest = (arr, key) =>
-      Math.min(...arr.map(x => x[key]));
+    const range = (c) =>
+      c.high - c.low;
 
-    const bodySize = candle =>
-      Math.abs(candle.close - candle.open);
+    const upperWick = (c) =>
+      c.high - Math.max(c.open, c.close);
 
-    const bullish = candle =>
-      candle.close > candle.open;
+    const lowerWick = (c) =>
+      Math.min(c.open, c.close) - c.low;
 
-    const bearish = candle =>
-      candle.close < candle.open;
+    const bullish = (c) =>
+      c.close > c.open;
 
-    // ==============================
-    // SWING DETECTION
-    // ==============================
+    const bearish = (c) =>
+      c.close < c.open;
+
+    const average = (values) =>
+      values.length
+        ? values.reduce((a, b) => a + b, 0) / values.length
+        : 0;
+
+    const maxHigh = (arr) =>
+      Math.max(...arr.map((c) => c.high));
+
+    const minLow = (arr) =>
+      Math.min(...arr.map((c) => c.low));
+
+    // =========================================================
+    // 3. SWING HIGH / LOW
+    // =========================================================
 
     const swingHighs = [];
     const swingLows = [];
 
-    const LEFT = 2;
-    const RIGHT = 2;
+    const LEFT = 3;
+    const RIGHT = 3;
 
-    for (let i = LEFT; i < candles.length - RIGHT; i++) {
-
-      const current = candles[i];
+    for (
+      let i = LEFT;
+      i < candles.length - RIGHT;
+      i++
+    ) {
+      const c = candles[i];
 
       let isSwingHigh = true;
       let isSwingLow = true;
 
       for (let j = 1; j <= LEFT; j++) {
-        if (current.high <= candles[i - j].high) {
+        if (c.high <= candles[i - j].high) {
           isSwingHigh = false;
         }
 
-        if (current.low >= candles[i - j].low) {
+        if (c.low >= candles[i - j].low) {
           isSwingLow = false;
         }
       }
 
       for (let j = 1; j <= RIGHT; j++) {
-        if (current.high <= candles[i + j].high) {
+        if (c.high <= candles[i + j].high) {
           isSwingHigh = false;
         }
 
-        if (current.low >= candles[i + j].low) {
+        if (c.low >= candles[i + j].low) {
           isSwingLow = false;
         }
       }
@@ -123,38 +150,38 @@ export default async function handler(req, res) {
       if (isSwingHigh) {
         swingHighs.push({
           index: i,
-          datetime: current.datetime,
-          price: current.high
+          price: c.high,
+          datetime: c.datetime
         });
       }
 
       if (isSwingLow) {
         swingLows.push({
           index: i,
-          datetime: current.datetime,
-          price: current.low
+          price: c.low,
+          datetime: c.datetime
         });
       }
     }
 
-    // ==============================
-    // CURRENT STRUCTURE
-    // ==============================
+    const recentHighs = swingHighs.slice(-12);
+    const recentLows = swingLows.slice(-12);
 
-    const recentSwingHighs = swingHighs.slice(-10);
-    const recentSwingLows = swingLows.slice(-10);
-
-    const latestSwingHigh = last(recentSwingHighs);
+    const latestSwingHigh = last(recentHighs);
     const previousSwingHigh =
-      recentSwingHighs.length >= 2
-        ? recentSwingHighs[recentSwingHighs.length - 2]
+      recentHighs.length >= 2
+        ? recentHighs[recentHighs.length - 2]
         : null;
 
-    const latestSwingLow = last(recentSwingLows);
+    const latestSwingLow = last(recentLows);
     const previousSwingLow =
-      recentSwingLows.length >= 2
-        ? recentSwingLows[recentSwingLows.length - 2]
+      recentLows.length >= 2
+        ? recentLows[recentLows.length - 2]
         : null;
+
+    // =========================================================
+    // 4. MARKET STRUCTURE
+    // =========================================================
 
     let marketStructure = "NEUTRAL";
 
@@ -164,286 +191,313 @@ export default async function handler(req, res) {
       latestSwingLow &&
       previousSwingLow
     ) {
-      if (
-        latestSwingHigh.price > previousSwingHigh.price &&
-        latestSwingLow.price > previousSwingLow.price
-      ) {
+      const higherHigh =
+        latestSwingHigh.price > previousSwingHigh.price;
+
+      const higherLow =
+        latestSwingLow.price > previousSwingLow.price;
+
+      const lowerHigh =
+        latestSwingHigh.price < previousSwingHigh.price;
+
+      const lowerLow =
+        latestSwingLow.price < previousSwingLow.price;
+
+      if (higherHigh && higherLow) {
         marketStructure = "BULLISH";
       }
 
-      if (
-        latestSwingHigh.price < previousSwingHigh.price &&
-        latestSwingLow.price < previousSwingLow.price
-      ) {
+      if (lowerHigh && lowerLow) {
         marketStructure = "BEARISH";
       }
     }
 
-    // ==============================
-    // BOS DETECTION
-    // ==============================
+    // =========================================================
+    // 5. BOS
+    // =========================================================
 
     const bosEvents = [];
 
-    for (let i = 0; i < candles.length; i++) {
+    let brokenHighIndex = null;
+    let brokenLowIndex = null;
 
-      const candle = candles[i];
+    for (let i = LEFT + RIGHT; i < candles.length; i++) {
+      const c = candles[i];
 
-      const previousHighs = swingHighs.filter(
-        s => s.index < i
+      const availableHighs = swingHighs.filter(
+        (s) => s.index < i
       );
 
-      const previousLows = swingLows.filter(
-        s => s.index < i
+      const availableLows = swingLows.filter(
+        (s) => s.index < i
       );
 
-      const lastHigh = last(previousHighs);
-      const lastLow = last(previousLows);
+      const lastHigh = last(availableHighs);
+      const lastLow = last(availableLows);
 
       if (
         lastHigh &&
-        candle.close > lastHigh.price
+        c.close > lastHigh.price &&
+        brokenHighIndex !== lastHigh.index
       ) {
         bosEvents.push({
           type: "BULLISH_BOS",
-          datetime: candle.datetime,
-          price: candle.close,
+          datetime: c.datetime,
+          index: i,
+          price: c.close,
           brokenLevel: lastHigh.price
         });
+
+        brokenHighIndex = lastHigh.index;
       }
 
       if (
         lastLow &&
-        candle.close < lastLow.price
+        c.close < lastLow.price &&
+        brokenLowIndex !== lastLow.index
       ) {
         bosEvents.push({
           type: "BEARISH_BOS",
-          datetime: candle.datetime,
-          price: candle.close,
+          datetime: c.datetime,
+          index: i,
+          price: c.close,
           brokenLevel: lastLow.price
         });
+
+        brokenLowIndex = lastLow.index;
       }
     }
 
-    const latestBOS =
-      bosEvents.length > 0
-        ? last(bosEvents)
-        : null;
+    const latestBOS = last(bosEvents);
 
-    // ==============================
-    // CHOCH DETECTION
-    // ==============================
+    // =========================================================
+    // 6. CHOCH
+    // =========================================================
 
     let choch = null;
 
     if (marketStructure === "BULLISH") {
+      const bearishBreak = bosEvents.filter(
+        (x) => x.type === "BEARISH_BOS"
+      );
 
-      const bearishBreak = bosEvents
-        .filter(x => x.type === "BEARISH_BOS");
-
-      if (bearishBreak.length > 0) {
+      if (bearishBreak.length) {
         choch = {
           type: "BEARISH_CHOCH",
-          datetime: last(bearishBreak).datetime,
-          price: last(bearishBreak).price
+          ...last(bearishBreak)
         };
       }
     }
 
     if (marketStructure === "BEARISH") {
+      const bullishBreak = bosEvents.filter(
+        (x) => x.type === "BULLISH_BOS"
+      );
 
-      const bullishBreak = bosEvents
-        .filter(x => x.type === "BULLISH_BOS");
-
-      if (bullishBreak.length > 0) {
+      if (bullishBreak.length) {
         choch = {
           type: "BULLISH_CHOCH",
-          datetime: last(bullishBreak).datetime,
-          price: last(bullishBreak).price
+          ...last(bullishBreak)
         };
       }
     }
 
-    // ==============================
-    // LIQUIDITY SWEEPS
-    // ==============================
+    // =========================================================
+    // 7. LIQUIDITY
+    // =========================================================
 
     const liquiditySweeps = [];
 
-    for (let i = 5; i < candles.length; i++) {
+    for (let i = 10; i < candles.length; i++) {
+      const c = candles[i];
 
-      const candle = candles[i];
+      const previous = candles.slice(i - 10, i);
 
-      const previousCandles =
-        candles.slice(Math.max(0, i - 10), i);
-
-      const recentHigh =
-        highest(previousCandles, "high");
-
-      const recentLow =
-        lowest(previousCandles, "low");
+      const recentHigh = maxHigh(previous);
+      const recentLow = minLow(previous);
 
       // Buy-side liquidity sweep
       if (
-        candle.high > recentHigh &&
-        candle.close < recentHigh
+        c.high > recentHigh &&
+        c.close < recentHigh
       ) {
         liquiditySweeps.push({
-          type: "BUY_SIDE_LIQUIDITY_SWEEP",
-          datetime: candle.datetime,
-          sweepPrice: candle.high,
+          type: "BUY_SIDE_SWEEP",
+          datetime: c.datetime,
+          index: i,
+          sweepPrice: c.high,
           reclaimedLevel: recentHigh
         });
       }
 
       // Sell-side liquidity sweep
       if (
-        candle.low < recentLow &&
-        candle.close > recentLow
+        c.low < recentLow &&
+        c.close > recentLow
       ) {
         liquiditySweeps.push({
-          type: "SELL_SIDE_LIQUIDITY_SWEEP",
-          datetime: candle.datetime,
-          sweepPrice: candle.low,
+          type: "SELL_SIDE_SWEEP",
+          datetime: c.datetime,
+          index: i,
+          sweepPrice: c.low,
           reclaimedLevel: recentLow
         });
       }
     }
 
     const latestLiquiditySweep =
-      last(liquiditySweeps) || null;
+      last(liquiditySweeps);
 
-    // ==============================
-    // FVG DETECTION
-    // ==============================
+    // =========================================================
+    // 8. FAIR VALUE GAPS
+    // =========================================================
 
     const fvgs = [];
 
     for (let i = 1; i < candles.length - 1; i++) {
-
-      const previous = candles[i - 1];
-      const current = candles[i];
-      const next = candles[i + 1];
+      const left = candles[i - 1];
+      const middle = candles[i];
+      const right = candles[i + 1];
 
       // Bullish FVG
-      if (previous.high < next.low) {
-
+      if (left.high < right.low) {
         fvgs.push({
           type: "BULLISH_FVG",
-          datetime: current.datetime,
-          low: previous.high,
-          high: next.low,
-          midpoint:
-            (previous.high + next.low) / 2
+          datetime: middle.datetime,
+          index: i,
+          low: left.high,
+          high: right.low,
+          midpoint: (left.high + right.low) / 2,
+          filled: false
         });
       }
 
       // Bearish FVG
-      if (previous.low > next.high) {
-
+      if (left.low > right.high) {
         fvgs.push({
           type: "BEARISH_FVG",
-          datetime: current.datetime,
-          low: next.high,
-          high: previous.low,
-          midpoint:
-            (next.high + previous.low) / 2
+          datetime: middle.datetime,
+          index: i,
+          low: right.high,
+          high: left.low,
+          midpoint: (right.high + left.low) / 2,
+          filled: false
         });
       }
     }
 
-    // ==============================
-    // FVG STATUS
-    // ==============================
+    // Mark filled FVGs
+    for (const fvg of fvgs) {
+      for (
+        let i = fvg.index + 2;
+        i < candles.length;
+        i++
+      ) {
+        const c = candles[i];
 
-    const currentPrice = last(candles).close;
-
-    const activeFVGs = fvgs.filter(fvg => {
-
-      if (fvg.type === "BULLISH_FVG") {
-        return currentPrice >= fvg.low;
+        if (
+          c.low <= fvg.low &&
+          c.high >= fvg.high
+        ) {
+          fvg.filled = true;
+          fvg.filledAt = c.datetime;
+          break;
+        }
       }
+    }
 
-      if (fvg.type === "BEARISH_FVG") {
-        return currentPrice <= fvg.high;
-      }
+    const activeFVGs = fvgs.filter(
+      (fvg) => !fvg.filled
+    );
 
-      return false;
-    });
+    const latestActiveFVG =
+      last(activeFVGs);
 
-    const latestFVG =
-      last(activeFVGs) || null;
-
-    // ==============================
-    // ORDER BLOCK DETECTION
-    // ==============================
+    // =========================================================
+    // 9. ORDER BLOCKS
+    // =========================================================
 
     const orderBlocks = [];
 
-    for (let i = 2; i < candles.length; i++) {
+    for (const bos of bosEvents) {
+      const i = bos.index;
 
-      const candle = candles[i];
-      const previous = candles[i - 1];
+      if (i < 2) continue;
 
-      const move =
-        Math.abs(candle.close - previous.close);
+      let oppositeCandle = null;
 
-      const averageBody =
-        candles
-          .slice(Math.max(0, i - 10), i)
-          .reduce(
-            (sum, c) => sum + bodySize(c),
-            0
-          ) / Math.min(i, 10);
-
-      // Bullish displacement
-      if (
-        bullish(candle) &&
-        move > averageBody * 1.5 &&
-        bearish(previous)
+      // Find last opposite candle before displacement
+      for (
+        let j = i - 1;
+        j >= Math.max(0, i - 8);
+        j--
       ) {
+        const c = candles[j];
 
-        orderBlocks.push({
-          type: "BULLISH_ORDER_BLOCK",
-          datetime: previous.datetime,
-          high: previous.high,
-          low: previous.low
-        });
+        if (
+          bos.type === "BULLISH_BOS" &&
+          bearish(c)
+        ) {
+          oppositeCandle = {
+            index: j,
+            candle: c
+          };
+          break;
+        }
+
+        if (
+          bos.type === "BEARISH_BOS" &&
+          bullish(c)
+        ) {
+          oppositeCandle = {
+            index: j,
+            candle: c
+          };
+          break;
+        }
       }
 
-      // Bearish displacement
-      if (
-        bearish(candle) &&
-        move > averageBody * 1.5 &&
-        bullish(previous)
-      ) {
+      if (!oppositeCandle) continue;
 
-        orderBlocks.push({
-          type: "BEARISH_ORDER_BLOCK",
-          datetime: previous.datetime,
-          high: previous.high,
-          low: previous.low
-        });
-      }
+      const ob = oppositeCandle.candle;
+
+      orderBlocks.push({
+        type:
+          bos.type === "BULLISH_BOS"
+            ? "BULLISH_ORDER_BLOCK"
+            : "BEARISH_ORDER_BLOCK",
+
+        datetime: ob.datetime,
+
+        index: oppositeCandle.index,
+
+        high: ob.high,
+
+        low: ob.low,
+
+        bosDatetime: bos.datetime,
+
+        bosPrice: bos.price
+      });
     }
 
     const latestOrderBlock =
-      last(orderBlocks) || null;
+      last(orderBlocks);
 
-    // ==============================
-    // PREMIUM / DISCOUNT
-    // ==============================
+    // =========================================================
+    // 10. PREMIUM / DISCOUNT
+    // =========================================================
 
-    const recentRange = candles.slice(-50);
+    const rangeCandles = candles.slice(-100);
 
-    const rangeHigh =
-      highest(recentRange, "high");
-
-    const rangeLow =
-      lowest(recentRange, "low");
+    const rangeHigh = maxHigh(rangeCandles);
+    const rangeLow = minLow(rangeCandles);
 
     const equilibrium =
       (rangeHigh + rangeLow) / 2;
+
+    const currentPrice =
+      last(candles).close;
 
     let zone = "EQUILIBRIUM";
 
@@ -455,62 +509,162 @@ export default async function handler(req, res) {
       zone = "DISCOUNT";
     }
 
-    // ==============================
-    // TRADE BIAS
-    // ==============================
+    // =========================================================
+    // 11. DISPLACEMENT
+    // =========================================================
 
-    let bias = "NEUTRAL";
-    let confidence = 0;
+    const recentBodies = candles
+      .slice(-21, -1)
+      .map(body);
 
+    const averageBody =
+      average(recentBodies);
+
+    const currentCandle =
+      last(candles);
+
+    const displacement =
+      body(currentCandle) >
+      averageBody * 1.5;
+
+    // =========================================================
+    // 12. CONFLUENCE SCORE
+    // =========================================================
+
+    let bullishScore = 0;
+    let bearishScore = 0;
+
+    const reasonsBullish = [];
+    const reasonsBearish = [];
+
+    // Structure
     if (marketStructure === "BULLISH") {
-      confidence += 30;
+      bullishScore += 25;
+      reasonsBullish.push("Bullish market structure");
     }
 
     if (marketStructure === "BEARISH") {
-      confidence += 30;
+      bearishScore += 25;
+      reasonsBearish.push("Bearish market structure");
     }
 
+    // BOS
     if (
       latestBOS &&
       latestBOS.type === "BULLISH_BOS"
     ) {
-      confidence += 20;
+      bullishScore += 20;
+      reasonsBullish.push("Bullish BOS");
     }
 
     if (
       latestBOS &&
       latestBOS.type === "BEARISH_BOS"
     ) {
-      confidence += 20;
+      bearishScore += 20;
+      reasonsBearish.push("Bearish BOS");
+    }
+
+    // CHOCH
+    if (
+      choch &&
+      choch.type === "BULLISH_CHOCH"
+    ) {
+      bullishScore += 15;
+      reasonsBullish.push("Bullish CHOCH");
+    }
+
+    if (
+      choch &&
+      choch.type === "BEARISH_CHOCH"
+    ) {
+      bearishScore += 15;
+      reasonsBearish.push("Bearish CHOCH");
+    }
+
+    // Liquidity
+    if (
+      latestLiquiditySweep &&
+      latestLiquiditySweep.type === "SELL_SIDE_SWEEP"
+    ) {
+      bullishScore += 15;
+      reasonsBullish.push("Sell-side liquidity swept");
     }
 
     if (
       latestLiquiditySweep &&
-      latestLiquiditySweep.type ===
-        "SELL_SIDE_LIQUIDITY_SWEEP"
+      latestLiquiditySweep.type === "BUY_SIDE_SWEEP"
     ) {
-      confidence += 20;
+      bearishScore += 15;
+      reasonsBearish.push("Buy-side liquidity swept");
+    }
+
+    // Premium / Discount
+    if (zone === "DISCOUNT") {
+      bullishScore += 10;
+      reasonsBullish.push("Price in discount");
+    }
+
+    if (zone === "PREMIUM") {
+      bearishScore += 10;
+      reasonsBearish.push("Price in premium");
+    }
+
+    // FVG
+    if (
+      latestActiveFVG &&
+      latestActiveFVG.type === "BULLISH_FVG" &&
+      currentPrice >= latestActiveFVG.low &&
+      currentPrice <= latestActiveFVG.high
+    ) {
+      bullishScore += 10;
+      reasonsBullish.push("Price inside bullish FVG");
     }
 
     if (
-      latestLiquiditySweep &&
-      latestLiquiditySweep.type ===
-        "BUY_SIDE_LIQUIDITY_SWEEP"
+      latestActiveFVG &&
+      latestActiveFVG.type === "BEARISH_FVG" &&
+      currentPrice >= latestActiveFVG.low &&
+      currentPrice <= latestActiveFVG.high
     ) {
-      confidence += 20;
+      bearishScore += 10;
+      reasonsBearish.push("Price inside bearish FVG");
     }
 
-    if (marketStructure === "BULLISH") {
+    // =========================================================
+    // 13. BIAS
+    // =========================================================
+
+    let bias = "NEUTRAL";
+    let confidence = 0;
+
+    if (
+      bullishScore >= 50 &&
+      bullishScore > bearishScore + 10
+    ) {
       bias = "BUY";
+      confidence = bullishScore;
     }
 
-    if (marketStructure === "BEARISH") {
+    if (
+      bearishScore >= 50 &&
+      bearishScore > bullishScore + 10
+    ) {
       bias = "SELL";
+      confidence = bearishScore;
     }
 
-    // ==============================
-    // ENTRY / SL / TP
-    // ==============================
+    if (bias === "NEUTRAL") {
+      confidence =
+        Math.max(
+          bullishScore,
+          bearishScore
+        );
+    }
+
+    // =========================================================
+    // 14. ENTRY / STOP LOSS / TAKE PROFIT
+    // =========================================================
 
     let entry = null;
     let stopLoss = null;
@@ -518,23 +672,33 @@ export default async function handler(req, res) {
     let riskReward = null;
 
     if (bias === "BUY") {
-
       entry = currentPrice;
 
-      if (latestOrderBlock &&
-          latestOrderBlock.type ===
-          "BULLISH_ORDER_BLOCK") {
+      // Prefer bullish OB
+      const bullishOB = [...orderBlocks]
+        .reverse()
+        .find(
+          (ob) =>
+            ob.type === "BULLISH_ORDER_BLOCK" &&
+            ob.low < entry
+        );
 
-        stopLoss = latestOrderBlock.low;
-      } else if (latestSwingLow) {
-
+      if (bullishOB) {
+        stopLoss = bullishOB.low;
+      } else if (
+        latestSwingLow &&
+        latestSwingLow.price < entry
+      ) {
         stopLoss = latestSwingLow.price;
       }
 
-      if (stopLoss && entry > stopLoss) {
-
+      if (
+        stopLoss !== null &&
+        entry > stopLoss
+      ) {
         const risk = entry - stopLoss;
 
+        // Target = 3R
         takeProfit = entry + risk * 3;
 
         riskReward = 3;
@@ -542,54 +706,84 @@ export default async function handler(req, res) {
     }
 
     if (bias === "SELL") {
-
       entry = currentPrice;
 
-      if (latestOrderBlock &&
-          latestOrderBlock.type ===
-          "BEARISH_ORDER_BLOCK") {
+      const bearishOB = [...orderBlocks]
+        .reverse()
+        .find(
+          (ob) =>
+            ob.type === "BEARISH_ORDER_BLOCK" &&
+            ob.high > entry
+        );
 
-        stopLoss = latestOrderBlock.high;
-      } else if (latestSwingHigh) {
-
+      if (bearishOB) {
+        stopLoss = bearishOB.high;
+      } else if (
+        latestSwingHigh &&
+        latestSwingHigh.price > entry
+      ) {
         stopLoss = latestSwingHigh.price;
       }
 
-      if (stopLoss && stopLoss > entry) {
-
+      if (
+        stopLoss !== null &&
+        stopLoss > entry
+      ) {
         const risk = stopLoss - entry;
 
+        // Target = 3R
         takeProfit = entry - risk * 3;
 
         riskReward = 3;
       }
     }
 
-    // ==============================
-    // SIGNAL QUALITY
-    // ==============================
+    // =========================================================
+    // 15. FINAL SIGNAL
+    // =========================================================
 
     let signal = "WAIT";
 
     if (
       bias !== "NEUTRAL" &&
       confidence >= 60 &&
-      entry &&
-      stopLoss &&
-      takeProfit
+      entry !== null &&
+      stopLoss !== null &&
+      takeProfit !== null
     ) {
       signal = bias;
     }
 
-    // ==============================
-    // RESPONSE
-    // ==============================
+    // =========================================================
+    // 16. MARKET STATE
+    // =========================================================
+
+    let marketState = "RANGING";
+
+    if (marketStructure === "BULLISH") {
+      marketState = "TRENDING_UP";
+    }
+
+    if (marketStructure === "BEARISH") {
+      marketState = "TRENDING_DOWN";
+    }
+
+    if (
+      latestLiquiditySweep &&
+      latestLiquiditySweep.index >=
+        candles.length - 3
+    ) {
+      marketState += "_LIQUIDITY_EVENT";
+    }
+
+    // =========================================================
+    // 17. FINAL RESPONSE
+    // =========================================================
 
     return res.status(200).json({
-
       success: true,
 
-      analyzer: "SMC Analyzer",
+      analyzer: "SMC Analyzer V2",
 
       symbol: SYMBOL,
 
@@ -598,11 +792,13 @@ export default async function handler(req, res) {
       timestamp: new Date().toISOString(),
 
       market: {
-        currentPrice: round(currentPrice, 5),
-        rangeHigh: round(rangeHigh, 5),
-        rangeLow: round(rangeLow, 5),
-        equilibrium: round(equilibrium, 5),
-        zone
+        currentPrice: round(currentPrice),
+        rangeHigh: round(rangeHigh),
+        rangeLow: round(rangeLow),
+        equilibrium: round(equilibrium),
+        zone,
+        marketState,
+        displacement
       },
 
       structure: {
@@ -610,86 +806,197 @@ export default async function handler(req, res) {
 
         latestSwingHigh: latestSwingHigh
           ? {
-              price: round(latestSwingHigh.price, 5),
-              datetime: latestSwingHigh.datetime
+              price: round(latestSwingHigh.price),
+              datetime:
+                latestSwingHigh.datetime
+            }
+          : null,
+
+        previousSwingHigh: previousSwingHigh
+          ? {
+              price: round(previousSwingHigh.price),
+              datetime:
+                previousSwingHigh.datetime
             }
           : null,
 
         latestSwingLow: latestSwingLow
           ? {
-              price: round(latestSwingLow.price, 5),
-              datetime: latestSwingLow.datetime
+              price: round(latestSwingLow.price),
+              datetime:
+                latestSwingLow.datetime
             }
           : null,
 
-        BOS: latestBOS,
+        previousSwingLow: previousSwingLow
+          ? {
+              price: round(previousSwingLow.price),
+              datetime:
+                previousSwingLow.datetime
+            }
+          : null,
+
+        latestBOS: latestBOS
+          ? {
+              type: latestBOS.type,
+              datetime: latestBOS.datetime,
+              price: round(latestBOS.price),
+              brokenLevel:
+                round(latestBOS.brokenLevel)
+            }
+          : null,
 
         CHOCH: choch
+          ? {
+              type: choch.type,
+              datetime: choch.datetime,
+              price: round(choch.price)
+            }
+          : null
       },
 
       liquidity: {
-        latestSweep: latestLiquiditySweep,
+        latestSweep:
+          latestLiquiditySweep
+            ? {
+                type:
+                  latestLiquiditySweep.type,
+                datetime:
+                  latestLiquiditySweep.datetime,
+                sweepPrice:
+                  round(
+                    latestLiquiditySweep.sweepPrice
+                  ),
+                reclaimedLevel:
+                  round(
+                    latestLiquiditySweep.reclaimedLevel
+                  )
+              }
+            : null,
 
         recentSweeps:
-          liquiditySweeps.slice(-10)
+          liquiditySweeps
+            .slice(-10)
+            .map((x) => ({
+              type: x.type,
+              datetime: x.datetime,
+              sweepPrice:
+                round(x.sweepPrice),
+              reclaimedLevel:
+                round(x.reclaimedLevel)
+            }))
       },
 
       fairValueGaps: {
-        latest: latestFVG,
+        latestActive:
+          latestActiveFVG
+            ? {
+                type:
+                  latestActiveFVG.type,
+                datetime:
+                  latestActiveFVG.datetime,
+                low:
+                  round(latestActiveFVG.low),
+                high:
+                  round(latestActiveFVG.high),
+                midpoint:
+                  round(
+                    latestActiveFVG.midpoint
+                  )
+              }
+            : null,
 
-        recent:
-          fvgs.slice(-10)
+        active:
+          activeFVGs
+            .slice(-10)
+            .map((x) => ({
+              type: x.type,
+              datetime: x.datetime,
+              low: round(x.low),
+              high: round(x.high),
+              midpoint:
+                round(x.midpoint)
+            }))
       },
 
       orderBlocks: {
-        latest: latestOrderBlock,
+        latest:
+          latestOrderBlock
+            ? {
+                type:
+                  latestOrderBlock.type,
+                datetime:
+                  latestOrderBlock.datetime,
+                high:
+                  round(
+                    latestOrderBlock.high
+                  ),
+                low:
+                  round(
+                    latestOrderBlock.low
+                  ),
+                bosDatetime:
+                  latestOrderBlock.bosDatetime
+              }
+            : null,
 
         recent:
-          orderBlocks.slice(-10)
+          orderBlocks
+            .slice(-10)
+            .map((x) => ({
+              type: x.type,
+              datetime: x.datetime,
+              high: round(x.high),
+              low: round(x.low),
+              bosDatetime:
+                x.bosDatetime
+            }))
+      },
+
+      confluence: {
+        bullishScore,
+        bearishScore,
+        bullishReasons: reasonsBullish,
+        bearishReasons: reasonsBearish
       },
 
       tradingPlan: {
-
         bias,
-
         signal,
-
         confidence: Math.min(confidence, 100),
 
         entry:
           entry !== null
-            ? round(entry, 5)
+            ? round(entry)
             : null,
 
         stopLoss:
           stopLoss !== null
-            ? round(stopLoss, 5)
+            ? round(stopLoss)
             : null,
 
         takeProfit:
           takeProfit !== null
-            ? round(takeProfit, 5)
+            ? round(takeProfit)
             : null,
 
         riskReward
       },
 
-      candlesAnalyzed: candles.length
+      candlesAnalyzed: candles.length,
 
+      disclaimer:
+        "Algorithmic SMC analysis for research and backtesting only. It is not financial advice and does not guarantee profitable trades."
     });
 
   } catch (error) {
-
     console.error(error);
 
     return res.status(500).json({
-
       success: false,
-
       error:
         error.message ||
         "Internal server error"
-
     });
   }
 }
