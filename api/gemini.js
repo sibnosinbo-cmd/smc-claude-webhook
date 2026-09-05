@@ -1,21 +1,5 @@
 export default async function handler(req, res) {
   try {
-    if (req.method !== "POST") {
-      return res.status(405).json({
-        success: false,
-        error: "Method not allowed"
-      });
-    }
-
-    const { smc } = req.body;
-
-    if (!smc) {
-      return res.status(400).json({
-        success: false,
-        error: "Missing SMC data"
-      });
-    }
-
     const apiKey = process.env.GEMINI_API_KEY;
 
     if (!apiKey) {
@@ -25,22 +9,39 @@ export default async function handler(req, res) {
       });
     }
 
-    const prompt = `
-You are an expert trading market analyst.
+    // Get SMC V4 analysis automatically
+    const baseUrl = `https://${req.headers.host}`;
+    const smcResponse = await fetch(
+      `${baseUrl}/api/analyze-v4`
+    );
 
-Analyze the following SMC Analyzer V4 data for XAU/USD.
+    const smc = await smcResponse.json();
+
+    if (!smcResponse.ok || !smc.success) {
+      return res.status(500).json({
+        success: false,
+        error: "SMC V4 analysis failed",
+        details: smc
+      });
+    }
+
+    const prompt = `
+You are an expert Smart Money Concepts (SMC) trading analyst.
+
+Analyze this XAU/USD SMC V4 data.
 
 IMPORTANT:
-- Do not invent market data.
-- Use only the information provided.
-- Treat the SMC signal as an analysis, not a guaranteed prediction.
-- If the setup is weak or conflicting, prefer WAIT.
-- Give a clear final decision: BUY, SELL, or WAIT.
+- Use ONLY the provided data.
+- Do not invent prices or market conditions.
+- Do not guarantee a profitable trade.
+- If the setup has conflicts or lacks confirmation, choose WAIT.
+- Final signal must be BUY, SELL, or WAIT.
+- Be conservative.
 
-SMC DATA:
+SMC V4 DATA:
 ${JSON.stringify(smc, null, 2)}
 
-Return ONLY valid JSON in this exact structure:
+Return ONLY valid JSON:
 
 {
   "signal": "BUY | SELL | WAIT",
@@ -99,7 +100,7 @@ Return ONLY valid JSON in this exact structure:
     if (!text) {
       return res.status(500).json({
         success: false,
-        error: "Gemini returned no text",
+        error: "Gemini returned no response",
         raw: data
       });
     }
@@ -109,24 +110,17 @@ Return ONLY valid JSON in this exact structure:
     try {
       analysis = JSON.parse(text);
     } catch {
-      analysis = {
-        signal: "WAIT",
-        confidence: 0,
-        bias: "NEUTRAL",
-        market_quality: "D",
-        entry: null,
-        stop_loss: null,
-        take_profit: null,
-        risk_reward: null,
-        reasons: [],
-        warnings: ["Gemini returned invalid JSON"],
-        analysis: text
-      };
+      return res.status(500).json({
+        success: false,
+        error: "Gemini returned invalid JSON",
+        raw: text
+      });
     }
 
     return res.status(200).json({
       success: true,
-      analyzer: "SMC Analyzer V4 + Gemini",
+      system: "XAU/USD → Twelve Data → SMC V4 → Gemini",
+      smcVersion: "4.0",
       symbol: "XAU/USD",
       analysis
     });
@@ -137,4 +131,4 @@ Return ONLY valid JSON in this exact structure:
       error: error.message
     });
   }
-          }
+        }
