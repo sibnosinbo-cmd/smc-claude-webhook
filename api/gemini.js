@@ -1,52 +1,56 @@
 export default async function handler(req, res) {
   try {
-    const apiKey = process.env.OPENROUTER_API_KEY;
+    const API_KEY = process.env.OPENROUTER_API_KEY;
 
-    if (!apiKey) {
+    if (!API_KEY) {
       return res.status(500).json({
         success: false,
-        error: "OPENROUTER_API_KEY is missing"
+        error: "OPENROUTER_API_KEY غير موجود في Vercel"
       });
     }
 
-    // Get SMC V4 data
-    const smcResponse = await fetch(
-      "https://smc-claude-webhook.vercel.app/api/analyze-v4"
-    );
+    // جلب تحليل SMC V4
+    const smcUrl =
+      "https://smc-claude-webhook.vercel.app/api/analyze-v4";
 
-    const smcRaw = await smcResponse.text();
-
-    if (!smcResponse.ok) {
-      return res.status(500).json({
-        success: false,
-        error: "SMC V4 request failed",
-        status: smcResponse.status,
-        details: smcRaw.substring(0, 1000)
-      });
-    }
+    const smcResponse = await fetch(smcUrl);
+    const smcText = await smcResponse.text();
 
     let smcData;
 
     try {
-      smcData = JSON.parse(smcRaw);
+      smcData = JSON.parse(smcText);
     } catch {
       return res.status(500).json({
         success: false,
-        error: "SMC V4 returned invalid JSON",
-        details: smcRaw.substring(0, 1000)
+        error: "تعذر قراءة نتيجة SMC Analyzer",
+        details: smcText.slice(0, 1000)
       });
     }
 
+    if (!smcResponse.ok || !smcData.success) {
+      return res.status(500).json({
+        success: false,
+        error: "فشل SMC Analyzer",
+        details: smcData
+      });
+    }
+
+    // Prompt مختصر لتقليل استهلاك التوكنات
     const prompt = `
-You are a conservative SMC trading analyst.
+You are an SMC trading analyst.
 
-Analyze this XAU/USD 5-minute SMC data:
+Analyze ONLY the SMC data below.
 
-${JSON.stringify(smcData)}
+IMPORTANT:
+- Do not invent prices or market data.
+- Do not contradict the supplied SMC data.
+- Do not explain your reasoning process.
+- Give only the final analysis.
+- If there is no confirmed setup, use WAIT.
+- Do not force BUY or SELL.
 
-Return ONLY the following format.
-Do NOT explain your reasoning.
-Do NOT show chain of thought.
+Return exactly this format:
 
 SIGNAL: BUY / SELL / WAIT
 CONFIDENCE: 0-100
@@ -68,105 +72,109 @@ WARNINGS:
 - warning 2
 
 ANALYSIS:
-one short paragraph
+Short final analysis.
 
-Rules:
-- Never guarantee profit.
-- If confirmation is insufficient, use WAIT.
-- Do not invent prices.
-- No displacement = lower confidence.
-- Conflicting evidence = prefer WAIT.
+SMC DATA:
+${JSON.stringify(smcData, null, 2)}
 `;
 
+    // OpenRouter
     const aiResponse = await fetch(
       "https://openrouter.ai/api/v1/chat/completions",
       {
         method: "POST",
         headers: {
-          "Authorization": `Bearer ${apiKey}`,
+          Authorization: `Bearer ${API_KEY}`,
           "Content-Type": "application/json",
-          "HTTP-Referer": "https://smc-claude-webhook.vercel.app",
-          "X-Title": "SMC Analyzer"
+          "HTTP-Referer":
+            "https://smc-claude-webhook.vercel.app",
+          "X-Title": "SMC AI Analyzer"
         },
         body: JSON.stringify({
-          // Specific fast free model instead of the free router
-          model: "google/gemma-3-27b-it:free",
-
+          model: "openrouter/free",
           messages: [
-            {
-              role: "system",
-              content:
-                "Return only the requested trading analysis format. Never output reasoning."
-            },
             {
               role: "user",
               content: prompt
             }
           ],
-
           temperature: 0,
-          max_tokens: 600
+          max_tokens: 800
         })
       }
     );
 
-    const aiRaw = await aiResponse.text();
-
-    if (!aiResponse.ok) {
-      return res.status(500).json({
-        success: false,
-        error: "OpenRouter request failed",
-        status: aiResponse.status,
-        details: aiRaw.substring(0, 2000)
-      });
-    }
+    const aiText = await aiResponse.text();
 
     let aiData;
 
     try {
-      aiData = JSON.parse(aiRaw);
+      aiData = JSON.parse(aiText);
     } catch {
       return res.status(500).json({
         success: false,
-        error: "OpenRouter returned invalid JSON",
-        details: aiRaw.substring(0, 2000)
+        error: "OpenRouter أعاد استجابة غير صالحة",
+        status: aiResponse.status,
+        details: aiText.slice(0, 2000)
       });
     }
 
-    let analysis = aiData?.choices?.[0]?.message?.content;
+    if (!aiResponse.ok) {
+      return res.status(aiResponse.status).json({
+        success: false,
+        error: "فشل طلب OpenRouter",
+        status: aiResponse.status,
+        details: aiData
+      });
+    }
 
+    // استخراج المحتوى فقط
+    const message = aiData?.choices?.[0]?.message;
+
+    let analysis = message?.content;
+
+    // بعض النماذج ترجع content كمصفوفة
     if (Array.isArray(analysis)) {
       analysis = analysis
-        .map(x => typeof x === "string" ? x : (x?.text || ""))
-        .join("\n");
+        .map((item) => item?.text || "")
+        .join("");
     }
 
-    if (analysis !== null && analysis !== undefined) {
-      analysis = String(analysis);
-    }
-
+    // إذا لم يرجع النموذج محتوى
     if (!analysis || !analysis.trim()) {
-      return res.status(500).json({
+      return res.status(502).json({
         success: false,
-        error: "AI returned empty analysis",
-        finish_reason: aiData?.choices?.[0]?.finish_reason,
-        model: aiData?.model,
-        raw: aiData
+        error: "OpenRouter أعاد تحليلًا فارغًا",
+        model: aiData?.model || null,
+        provider: aiData?.provider || null,
+        finish_reason:
+          aiData?.choices?.[0]?.finish_reason || null
       });
     }
 
     return res.status(200).json({
       success: true,
-      system: "XAU/USD → Twelve Data → SMC V4 → OpenRouter",
-      model: aiData?.model || "google/gemma-3-27b-it:free",
+      system: "SMC Analyzer V4 + OpenRouter AI",
+      model: aiData.model || "openrouter/free",
       timestamp: new Date().toISOString(),
 
-      signal_source: {
-        analyzer: "SMC Analyzer V4",
-        timeframe: "5min"
-      },
+      signal_source: "SMC V4",
 
-      smc: smcData,
+      smc: {
+        symbol: smcData.symbol,
+        timeframe: smcData.timeframe,
+        price: smcData.market?.price,
+        marketStructure:
+          smcData.structure?.marketStructure,
+        bos: smcData.structure?.BOS,
+        choch: smcData.structure?.CHOCH,
+        liquidity: smcData.liquidity?.latestSweep,
+        displacement: smcData.displacement,
+        fvg: smcData.FVG,
+        orderBlock: smcData.orderBlock,
+        confluence: smcData.confluence,
+        tradingPlan: smcData.tradingPlan
+      },
 
       analysis: analysis.trim(),
 
@@ -175,12 +183,10 @@ Rules:
     });
 
   } catch (error) {
-    console.error("SMC AI ERROR:", error);
-
     return res.status(500).json({
       success: false,
       error: "Internal Server Error",
-      message: error?.message || String(error)
+      message: error.message
     });
   }
-}
+  }
