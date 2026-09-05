@@ -101,18 +101,45 @@ Return ONLY valid JSON:
         error: "OpenRouter returned no response",
         raw: data
       });
-    }
-
+  
     let analysis;
 
-    try {
-      const cleaned = text
-        .replace(/```json/gi, "")
-        .replace(/```/g, "")
-        .trim();
+try {
+  let cleaned = text
+    .replace(/```json/gi, "")
+    .replace(/```/g, "")
+    .trim();
 
-      analysis = JSON.parse(cleaned);
-    } catch {
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+
+  if (start !== -1 && end !== -1 && end > start) {
+    cleaned = cleaned.substring(start, end + 1);
+  }
+
+  analysis = JSON.parse(cleaned);
+
+} catch (error) {
+  return res.status(200).json({
+    success: true,
+    system: "XAU/USD → Twelve Data → SMC V4 → OpenRouter",
+    model: "openrouter/free",
+    ai_raw_response: text,
+    analysis: {
+      signal: "WAIT",
+      confidence: 0,
+      bias: "NEUTRAL",
+      market_quality: "D",
+      entry: null,
+      stop_loss: null,
+      take_profit: null,
+      risk_reward: null,
+      reasons: [],
+      warnings: ["AI response could not be parsed as JSON"],
+      analysis: text
+    }
+  });
+}
       analysis = {
         signal: "WAIT",
         confidence: 0,
