@@ -1,203 +1,185 @@
 export default async function handler(req, res) {
+  // السماح بـ GET و POST
+  if (req.method !== "GET" && req.method !== "POST") {
+    return res.status(405).json({
+      success: false,
+      error: "Method not allowed"
+    });
+  }
+
   try {
     const apiKey = process.env.OPENROUTER_API_KEY;
 
     if (!apiKey) {
       return res.status(500).json({
         success: false,
-        error: "OPENROUTER_API_KEY is not configured"
+        error: "OPENROUTER_API_KEY غير موجود في Vercel"
       });
     }
 
-    // ==============================
-    // 1. Get SMC V4 automatically
-    // ==============================
+    // جلب تحليل SMC V4
+    const baseUrl =
+      process.env.VERCEL_URL
+        ? `https://${process.env.VERCEL_URL}`
+        : "https://smc-claude-webhook.vercel.app";
 
-    const host = req.headers.host;
+    const smcResponse = await fetch(`${baseUrl}/api/analyze-v4`);
 
-    const smcResponse = await fetch(
-      `https://${host}/api/analyze-v4`
-    );
+    if (!smcResponse.ok) {
+      const errorText = await smcResponse.text();
 
-    const smc = await smcResponse.json();
-
-    if (!smcResponse.ok || !smc.success) {
       return res.status(500).json({
         success: false,
-        error: "SMC V4 analysis failed",
-        details: smc
+        error: "فشل في جلب تحليل SMC V4",
+        details: errorText
       });
     }
 
-    // ==============================
-    // 2. Prompt
-    // ==============================
+    const smcData = await smcResponse.json();
 
+    // البيانات التي سنرسلها إلى الذكاء الاصطناعي
     const prompt = `
-You are an expert Smart Money Concepts trading analyst.
+أنت محلل تداول محترف متخصص في Smart Money Concepts (SMC).
 
-Analyze this XAU/USD 5-minute SMC V4 data.
+حلل بيانات XAU/USD التالية:
 
-IMPORTANT RULES:
+${JSON.stringify(smcData, null, 2)}
 
-- Use ONLY the data provided.
-- Never invent market data.
-- Never guarantee profit.
-- If the setup is conflicting or weak, choose WAIT.
-- Absence of displacement is a warning.
-- Consider BOS, CHOCH, liquidity sweep, FVG, Order Block and Premium/Discount.
-- Be conservative.
-- This is analysis for research/testing, not financial advice.
+أعطني تحليلًا محافظًا وواضحًا.
 
-SMC V4 DATA:
+القواعد:
+- لا تخترع بيانات غير موجودة.
+- إذا كانت المعطيات غير كافية، SIGNAL يجب أن يكون WAIT.
+- لا تعطِ BUY أو SELL لمجرد وجود عامل واحد.
+- انتبه إلى Liquidity Sweep و BOS و CHOCH و FVG و Order Block و Premium/Discount.
+- إذا لم يوجد Displacement واضح، خفّض الثقة.
+- لا تضمن الربح.
 
-${JSON.stringify(smc, null, 2)}
+أجب بهذا الشكل بالضبط:
 
-Give a professional trading analysis.
-
-Your answer MUST contain:
-
-SIGNAL: BUY, SELL, or WAIT
-
-CONFIDENCE: number from 0 to 100
-
-BIAS: BULLISH, BEARISH, or NEUTRAL
-
-MARKET QUALITY: A, B, C, or D
-
-ENTRY: price or N/A
-
-STOP LOSS: price or N/A
-
-TAKE PROFIT: price or N/A
-
-RISK REWARD: number or N/A
-
+SIGNAL: BUY أو SELL أو WAIT
+CONFIDENCE: رقم من 0 إلى 100
+BIAS: BULLISH أو BEARISH أو NEUTRAL
+MARKET QUALITY: A أو B أو C أو D
+ENTRY: رقم أو NONE
+STOP LOSS: رقم أو NONE
+TAKE PROFIT: رقم أو NONE
+RISK REWARD: رقم أو NONE
 REASONS:
-- reason 1
-- reason 2
-- reason 3
+- السبب الأول
+- السبب الثاني
+- السبب الثالث
 
 WARNINGS:
-- warning 1
-- warning 2
+- التحذير الأول
+- التحذير الثاني
 
 ANALYSIS:
-A short professional explanation of the setup.
+شرح مختصر للتحليل.
 `;
 
-    // ==============================
-    // 3. OpenRouter
-    // ==============================
-
-    const response = await fetch(
+    // إرسال البيانات إلى OpenRouter
+    const aiResponse = await fetch(
       "https://openrouter.ai/api/v1/chat/completions",
       {
         method: "POST",
-
         headers: {
           "Authorization": `Bearer ${apiKey}`,
           "Content-Type": "application/json",
           "HTTP-Referer": "https://smc-claude-webhook.vercel.app",
-          "X-Title": "SMC V4 Analyzer"
+          "X-Title": "SMC Analyzer"
         },
-
         body: JSON.stringify({
           model: "openrouter/free",
-
           messages: [
+            {
+              role: "system",
+              content:
+                "You are a conservative professional SMC trading analyst."
+            },
             {
               role: "user",
               content: prompt
             }
           ],
-
-          temperature: 0.2,
-
-          max_tokens: 1000
+          temperature: 0.1,
+          max_tokens: 1200
         })
       }
     );
 
-    const data = await response.json();
+    const aiText = await aiResponse.text();
 
-    // ==============================
-    // 4. OpenRouter error
-    // ==============================
-
-    if (!response.ok) {
-      return res.status(response.status).json({
-        success: false,
-        error: "OpenRouter API error",
-        details: data
-      });
-    }
-
-    // ==============================
-    // 5. Extract AI response
-    // ==============================
-
-    const text =
-      data?.choices?.[0]?.message?.content;
-
-    if (!text) {
+    if (!aiResponse.ok) {
       return res.status(500).json({
         success: false,
-        error: "OpenRouter returned no text",
-        raw: data
+        error: "OpenRouter API Error",
+        status: aiResponse.status,
+        details: aiText
       });
     }
 
-    // ==============================
-    // 6. Try JSON first
-    // ==============================
-
-    let parsed = null;
+    // تحويل رد OpenRouter إلى JSON
+    let aiData;
 
     try {
-      let cleaned = text.trim();
-
-      cleaned = cleaned
-        .replace(/```json/gi, "")
-        .replace(/```/g, "")
-        .trim();
-
-      const start = cleaned.indexOf("{");
-      const end = cleaned.lastIndexOf("}");
-
-      if (start !== -1 && end !== -1 && end > start) {
-        const jsonText = cleaned.substring(
-          start,
-          end + 1
-        );
-
-        parsed = JSON.parse(jsonText);
-      }
-    } catch (error) {
-      parsed = null;
-    }
-
-    // ==============================
-    // 7. If JSON worked
-    // ==============================
-
-    if (parsed) {
-      return res.status(200).json({
-        success: true,
-
-        system:
-          "XAU/USD → Twelve Data → SMC V4 → OpenRouter",
-
-        model:
-          data?.model || "openrouter/free",
-
-        timestamp:
-          new Date().toISOString(),
-
-        analysis: parsed
+      aiData = JSON.parse(aiText);
+    } catch {
+      return res.status(500).json({
+        success: false,
+        error: "OpenRouter returned invalid response",
+        raw: aiText
       });
     }
 
-    // ==============================
-    // 8. If NOT JSON
-    // Return the raw AI text
+    const content = aiData?.choices?.[0]?.message?.content;
+
+    // حماية من crash إذا كان content ليس string
+    let analysisText = "";
+
+    if (typeof content === "string") {
+      analysisText = content;
+    } else if (Array.isArray(content)) {
+      analysisText = content
+        .map(item => {
+          if (typeof item === "string") return item;
+          return item?.text || "";
+        })
+        .join("\n");
+    } else if (content != null) {
+      analysisText = String(content);
+    }
+
+    if (!analysisText.trim()) {
+      return res.status(500).json({
+        success: false,
+        error: "AI returned empty analysis",
+        raw: aiData
+      });
+    }
+
+    // النتيجة النهائية
+    return res.status(200).json({
+      success: true,
+      system: "XAU/USD → Twelve Data → SMC V4 → OpenRouter",
+      model: "openrouter/free",
+      timestamp: new Date().toISOString(),
+
+      smc: smcData,
+
+      analysis: analysisText,
+
+      disclaimer:
+        "تحليل آلي لأغراض البحث والاختبار فقط، وليس نصيحة مالية."
+    });
+
+  } catch (error) {
+    console.error("GEMINI/OPENROUTER ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      error: "Internal Server Error",
+      message: error?.message || String(error)
+    });
+  }
+      }
