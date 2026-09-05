@@ -9,10 +9,10 @@ export default async function handler(req, res) {
       });
     }
 
-    // SMC V4 endpoint
-    const smcUrl = "https://smc-claude-webhook.vercel.app/api/analyze-v4";
-
-    const smcResponse = await fetch(smcUrl);
+    // Get SMC V4 data
+    const smcResponse = await fetch(
+      "https://smc-claude-webhook.vercel.app/api/analyze-v4"
+    );
 
     const smcRaw = await smcResponse.text();
 
@@ -21,7 +21,7 @@ export default async function handler(req, res) {
         success: false,
         error: "SMC V4 request failed",
         status: smcResponse.status,
-        details: smcRaw
+        details: smcRaw.substring(0, 1000)
       });
     }
 
@@ -29,57 +29,53 @@ export default async function handler(req, res) {
 
     try {
       smcData = JSON.parse(smcRaw);
-    } catch (error) {
+    } catch {
       return res.status(500).json({
         success: false,
-        error: "SMC V4 did not return valid JSON",
+        error: "SMC V4 returned invalid JSON",
         details: smcRaw.substring(0, 1000)
       });
     }
 
-    // Send SMC analysis to OpenRouter
     const prompt = `
-You are a professional Smart Money Concepts (SMC) trading analyst.
+You are a conservative SMC trading analyst.
 
-Analyze the following XAU/USD 5-minute SMC data:
+Analyze this XAU/USD 5-minute SMC data:
 
-${JSON.stringify(smcData, null, 2)}
+${JSON.stringify(smcData)}
 
-IMPORTANT RULES:
-
-1. Be conservative.
-2. Never guarantee profit.
-3. Do not invent market data.
-4. If the setup is unclear, return WAIT.
-5. Consider structure, BOS, CHOCH, liquidity sweep, displacement, FVG, Order Block and Premium/Discount.
-6. A liquidity sweep alone is NOT enough for a trade.
-7. If displacement is false, reduce confidence.
-8. If BUY and SELL evidence are close, prefer WAIT.
-9. Only provide an entry, stop loss and take profit when a valid setup exists.
-10. Use the exact price levels available in the SMC data when possible.
-
-Return ONLY this format:
+Return ONLY the following format.
+Do NOT explain your reasoning.
+Do NOT show chain of thought.
 
 SIGNAL: BUY / SELL / WAIT
 CONFIDENCE: 0-100
 BIAS: BULLISH / BEARISH / NEUTRAL
 MARKET QUALITY: A / B / C / D
+
 ENTRY: price or NONE
 STOP LOSS: price or NONE
 TAKE PROFIT: price or NONE
 RISK REWARD: value or NONE
 
 REASONS:
-- reason
-- reason
-- reason
+- reason 1
+- reason 2
+- reason 3
 
 WARNINGS:
-- warning
-- warning
+- warning 1
+- warning 2
 
 ANALYSIS:
-short professional explanation
+one short paragraph
+
+Rules:
+- Never guarantee profit.
+- If confirmation is insufficient, use WAIT.
+- Do not invent prices.
+- No displacement = lower confidence.
+- Conflicting evidence = prefer WAIT.
 `;
 
     const aiResponse = await fetch(
@@ -93,20 +89,23 @@ short professional explanation
           "X-Title": "SMC Analyzer"
         },
         body: JSON.stringify({
-          model: "openrouter/free",
+          // Specific fast free model instead of the free router
+          model: "google/gemma-3-27b-it:free",
+
           messages: [
             {
               role: "system",
               content:
-                "You are a conservative professional SMC trading analyst. Follow the requested output format exactly."
+                "Return only the requested trading analysis format. Never output reasoning."
             },
             {
               role: "user",
               content: prompt
             }
           ],
-          temperature: 0.1,
-          max_tokens: 1200
+
+          temperature: 0,
+          max_tokens: 600
         })
       }
     );
@@ -118,7 +117,7 @@ short professional explanation
         success: false,
         error: "OpenRouter request failed",
         status: aiResponse.status,
-        details: aiRaw
+        details: aiRaw.substring(0, 2000)
       });
     }
 
@@ -126,7 +125,7 @@ short professional explanation
 
     try {
       aiData = JSON.parse(aiRaw);
-    } catch (error) {
+    } catch {
       return res.status(500).json({
         success: false,
         error: "OpenRouter returned invalid JSON",
@@ -134,16 +133,11 @@ short professional explanation
       });
     }
 
-    const message = aiData?.choices?.[0]?.message;
-    let analysis = message?.content;
+    let analysis = aiData?.choices?.[0]?.message?.content;
 
-    // Handle different possible OpenRouter content formats
     if (Array.isArray(analysis)) {
       analysis = analysis
-        .map(item => {
-          if (typeof item === "string") return item;
-          return item?.text || "";
-        })
+        .map(x => typeof x === "string" ? x : (x?.text || ""))
         .join("\n");
     }
 
@@ -155,6 +149,8 @@ short professional explanation
       return res.status(500).json({
         success: false,
         error: "AI returned empty analysis",
+        finish_reason: aiData?.choices?.[0]?.finish_reason,
+        model: aiData?.model,
         raw: aiData
       });
     }
@@ -162,7 +158,7 @@ short professional explanation
     return res.status(200).json({
       success: true,
       system: "XAU/USD → Twelve Data → SMC V4 → OpenRouter",
-      model: "openrouter/free",
+      model: aiData?.model || "google/gemma-3-27b-it:free",
       timestamp: new Date().toISOString(),
 
       signal_source: {
