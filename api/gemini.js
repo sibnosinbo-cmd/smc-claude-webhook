@@ -1,192 +1,244 @@
-export default async function handler(req, res) {
+<!DOCTYPE html>
+<html lang="ar">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SMC AI Trader</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #0b0f19;
+      color: white;
+      min-height: 100vh;
+    }
+
+    .container {
+      max-width: 700px;
+      margin: auto;
+      padding: 25px 15px;
+    }
+
+    h1 {
+      text-align: center;
+      margin-bottom: 5px;
+    }
+
+    .subtitle {
+      text-align: center;
+      color: #9ca3af;
+      margin-bottom: 25px;
+    }
+
+    .card {
+      background: #111827;
+      border: 1px solid #263244;
+      border-radius: 16px;
+      padding: 20px;
+      margin-bottom: 15px;
+    }
+
+    button {
+      width: 100%;
+      padding: 15px;
+      border: 0;
+      border-radius: 12px;
+      background: #2563eb;
+      color: white;
+      font-size: 17px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      opacity: 0.6;
+    }
+
+    .signal {
+      text-align: center;
+      font-size: 38px;
+      font-weight: bold;
+      margin: 15px 0;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .box {
+      background: #0b1220;
+      padding: 14px;
+      border-radius: 10px;
+    }
+
+    .label {
+      color: #9ca3af;
+      font-size: 13px;
+    }
+
+    .value {
+      font-size: 18px;
+      margin-top: 5px;
+      font-weight: bold;
+    }
+
+    pre {
+      white-space: pre-wrap;
+      line-height: 1.7;
+      font-family: Arial, sans-serif;
+    }
+
+    .status {
+      text-align: center;
+      color: #9ca3af;
+      margin: 15px;
+    }
+  </style>
+</head>
+
+<body>
+
+<div class="container">
+
+  <h1>🤖 SMC AI Trader</h1>
+  <div class="subtitle">XAU/USD • 5 Minutes</div>
+
+  <div class="card">
+    <button id="analyzeBtn" onclick="analyze()">
+      🔍 ANALYZE GOLD
+    </button>
+
+    <div id="status" class="status"></div>
+  </div>
+
+  <div class="card">
+
+    <div id="signal" class="signal">
+      WAIT
+    </div>
+
+    <div class="grid">
+
+      <div class="box">
+        <div class="label">Confidence</div>
+        <div id="confidence" class="value">-</div>
+      </div>
+
+      <div class="box">
+        <div class="label">Bias</div>
+        <div id="bias" class="value">-</div>
+      </div>
+
+      <div class="box">
+        <div class="label">Entry</div>
+        <div id="entry" class="value">-</div>
+      </div>
+
+      <div class="box">
+        <div class="label">Stop Loss</div>
+        <div id="sl" class="value">-</div>
+      </div>
+
+      <div class="box">
+        <div class="label">Take Profit</div>
+        <div id="tp" class="value">-</div>
+      </div>
+
+      <div class="box">
+        <div class="label">Risk / Reward</div>
+        <div id="rr" class="value">-</div>
+      </div>
+
+    </div>
+
+  </div>
+
+  <div class="card">
+
+    <h3>📊 AI Analysis</h3>
+
+    <pre id="analysis">
+اضغط ANALYZE GOLD للحصول على التحليل...
+    </pre>
+
+  </div>
+
+</div>
+
+<script>
+
+async function analyze() {
+
+  const button = document.getElementById("analyzeBtn");
+  const status = document.getElementById("status");
+
+  button.disabled = true;
+  status.innerText = "⏳ جاري تحليل الذهب...";
+
   try {
-    const API_KEY = process.env.OPENROUTER_API_KEY;
 
-    if (!API_KEY) {
-      return res.status(500).json({
-        success: false,
-        error: "OPENROUTER_API_KEY غير موجود في Vercel"
-      });
+    const response = await fetch("/api/gemini");
+
+    const data = await response.json();
+
+    if (!data.success) {
+      throw new Error(data.error || "Analysis failed");
     }
 
-    // جلب تحليل SMC V4
-    const smcUrl =
-      "https://smc-claude-webhook.vercel.app/api/analyze-v4";
+    const text = data.analysis || "";
 
-    const smcResponse = await fetch(smcUrl);
-    const smcText = await smcResponse.text();
+    const signal = getValue(text, "SIGNAL:");
+    const confidence = getValue(text, "CONFIDENCE:");
+    const bias = getValue(text, "BIAS:");
+    const entry = getValue(text, "ENTRY:");
+    const sl = getValue(text, "STOP LOSS:");
+    const tp = getValue(text, "TAKE PROFIT:");
+    const rr = getValue(text, "RISK REWARD:");
 
-    let smcData;
+    document.getElementById("signal").innerText = signal || "WAIT";
+    document.getElementById("confidence").innerText = confidence || "-";
+    document.getElementById("bias").innerText = bias || "-";
+    document.getElementById("entry").innerText = entry || "-";
+    document.getElementById("sl").innerText = sl || "-";
+    document.getElementById("tp").innerText = tp || "-";
+    document.getElementById("rr").innerText = rr || "-";
 
-    try {
-      smcData = JSON.parse(smcText);
-    } catch {
-      return res.status(500).json({
-        success: false,
-        error: "تعذر قراءة نتيجة SMC Analyzer",
-        details: smcText.slice(0, 1000)
-      });
-    }
+    document.getElementById("analysis").innerText = text;
 
-    if (!smcResponse.ok || !smcData.success) {
-      return res.status(500).json({
-        success: false,
-        error: "فشل SMC Analyzer",
-        details: smcData
-      });
-    }
-
-    // Prompt مختصر لتقليل استهلاك التوكنات
-    const prompt = `
-You are an SMC trading analyst.
-
-Analyze ONLY the SMC data below.
-
-IMPORTANT:
-- Do not invent prices or market data.
-- Do not contradict the supplied SMC data.
-- Do not explain your reasoning process.
-- Give only the final analysis.
-- If there is no confirmed setup, use WAIT.
-- Do not force BUY or SELL.
-
-Return exactly this format:
-
-SIGNAL: BUY / SELL / WAIT
-CONFIDENCE: 0-100
-BIAS: BULLISH / BEARISH / NEUTRAL
-MARKET QUALITY: A / B / C / D
-
-ENTRY: price or NONE
-STOP LOSS: price or NONE
-TAKE PROFIT: price or NONE
-RISK REWARD: value or NONE
-
-REASONS:
-- reason 1
-- reason 2
-- reason 3
-
-WARNINGS:
-- warning 1
-- warning 2
-
-ANALYSIS:
-Short final analysis.
-
-SMC DATA:
-${JSON.stringify(smcData, null, 2)}
-`;
-
-    // OpenRouter
-    const aiResponse = await fetch(
-      "https://openrouter.ai/api/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${API_KEY}`,
-          "Content-Type": "application/json",
-          "HTTP-Referer":
-            "https://smc-claude-webhook.vercel.app",
-          "X-Title": "SMC AI Analyzer"
-        },
-        body: JSON.stringify({
-          model: "openrouter/free",
-          messages: [
-            {
-              role: "user",
-              content: prompt
-            }
-          ],
-          temperature: 0,
-          max_tokens: 800
-        })
-      }
-    );
-
-    const aiText = await aiResponse.text();
-
-    let aiData;
-
-    try {
-      aiData = JSON.parse(aiText);
-    } catch {
-      return res.status(500).json({
-        success: false,
-        error: "OpenRouter أعاد استجابة غير صالحة",
-        status: aiResponse.status,
-        details: aiText.slice(0, 2000)
-      });
-    }
-
-    if (!aiResponse.ok) {
-      return res.status(aiResponse.status).json({
-        success: false,
-        error: "فشل طلب OpenRouter",
-        status: aiResponse.status,
-        details: aiData
-      });
-    }
-
-    // استخراج المحتوى فقط
-    const message = aiData?.choices?.[0]?.message;
-
-    let analysis = message?.content;
-
-    // بعض النماذج ترجع content كمصفوفة
-    if (Array.isArray(analysis)) {
-      analysis = analysis
-        .map((item) => item?.text || "")
-        .join("");
-    }
-
-    // إذا لم يرجع النموذج محتوى
-    if (!analysis || !analysis.trim()) {
-      return res.status(502).json({
-        success: false,
-        error: "OpenRouter أعاد تحليلًا فارغًا",
-        model: aiData?.model || null,
-        provider: aiData?.provider || null,
-        finish_reason:
-          aiData?.choices?.[0]?.finish_reason || null
-      });
-    }
-
-    return res.status(200).json({
-      success: true,
-      system: "SMC Analyzer V4 + OpenRouter AI",
-      model: aiData.model || "openrouter/free",
-      timestamp: new Date().toISOString(),
-
-      signal_source: "SMC V4",
-
-      smc: {
-        symbol: smcData.symbol,
-        timeframe: smcData.timeframe,
-        price: smcData.market?.price,
-        marketStructure:
-          smcData.structure?.marketStructure,
-        bos: smcData.structure?.BOS,
-        choch: smcData.structure?.CHOCH,
-        liquidity: smcData.liquidity?.latestSweep,
-        displacement: smcData.displacement,
-        fvg: smcData.FVG,
-        orderBlock: smcData.orderBlock,
-        confluence: smcData.confluence,
-        tradingPlan: smcData.tradingPlan
-      },
-
-      analysis: analysis.trim(),
-
-      disclaimer:
-        "Algorithmic SMC analysis for research and backtesting only. Not financial advice."
-    });
+    status.innerText = "✅ تم التحليل بنجاح";
 
   } catch (error) {
-    return res.status(500).json({
-      success: false,
-      error: "Internal Server Error",
-      message: error.message
-    });
+
+    status.innerText = "❌ حدث خطأ: " + error.message;
+
   }
-  }
+
+  button.disabled = false;
+}
+
+
+function getValue(text, label) {
+
+  const lines = text.split("\n");
+
+  const line = lines.find(l =>
+    l.trim().toUpperCase().startsWith(label)
+  );
+
+  if (!line) return "";
+
+  return line.substring(label.length).trim();
+
+}
+
+</script>
+
+</body>
+</html>
