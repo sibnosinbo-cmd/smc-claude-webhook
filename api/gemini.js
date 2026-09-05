@@ -1,15 +1,15 @@
 export default async function handler(req, res) {
   try {
-    const apiKey = process.env.GEMINI_API_KEY;
+    const apiKey = process.env.OPENROUTER_API_KEY;
 
     if (!apiKey) {
       return res.status(500).json({
         success: false,
-        error: "GEMINI_API_KEY is not configured"
+        error: "OPENROUTER_API_KEY is not configured"
       });
     }
 
-    // 1. Get SMC V4 automatically
+    // Get SMC V4 automatically
     const host = req.headers.host;
 
     const smcResponse = await fetch(
@@ -26,33 +26,30 @@ export default async function handler(req, res) {
       });
     }
 
-    // 2. Prepare Gemini prompt
     const prompt = `
-You are a professional Smart Money Concepts (SMC) market analyst.
+You are a professional Smart Money Concepts (SMC) trading analyst.
 
 Analyze the following XAU/USD 5-minute SMC V4 data.
 
 RULES:
-1. Use ONLY the provided data.
-2. Never invent prices or market conditions.
-3. Do not guarantee profit.
-4. If signals conflict, choose WAIT.
-5. Lack of displacement is a warning.
-6. Premium/Discount must be considered.
-7. Consider BOS, CHOCH, liquidity sweep, FVG and Order Block together.
-8. Be conservative.
-9. Final decision must be BUY, SELL, or WAIT.
+- Use ONLY the supplied data.
+- Do not invent market information.
+- Do not guarantee profit.
+- If signals conflict, prefer WAIT.
+- Absence of displacement is a warning.
+- Consider BOS, CHOCH, liquidity sweep, FVG, Order Block and Premium/Discount.
+- Be conservative.
 
 SMC V4 DATA:
 ${JSON.stringify(smc, null, 2)}
 
-Return ONLY valid JSON using this structure:
+Return ONLY valid JSON:
 
 {
-  "signal": "BUY",
+  "signal": "BUY | SELL | WAIT",
   "confidence": 0,
-  "bias": "BULLISH",
-  "market_quality": "A",
+  "bias": "BULLISH | BEARISH | NEUTRAL",
+  "market_quality": "A | B | C | D",
   "entry": null,
   "stop_loss": null,
   "take_profit": null,
@@ -63,76 +60,80 @@ Return ONLY valid JSON using this structure:
 }
 `;
 
-    // 3. Send SMC data to Gemini
-    const geminiResponse = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
+    const response = await fetch(
+      "https://openrouter.ai/api/v1/chat/completions",
       {
         method: "POST",
         headers: {
+          "Authorization": `Bearer ${apiKey}`,
           "Content-Type": "application/json",
-          "x-goog-api-key": apiKey
+          "HTTP-Referer": "https://smc-claude-webhook.vercel.app",
+          "X-Title": "SMC V4 Analyzer"
         },
         body: JSON.stringify({
-          contents: [
+          model: "openrouter/free",
+          messages: [
             {
               role: "user",
-              parts: [
-                {
-                  text: prompt
-                }
-              ]
+              content: prompt
             }
           ],
-          generationConfig: {
-            responseMimeType: "application/json"
-          }
+          temperature: 0.2
         })
       }
     );
 
-    const data = await geminiResponse.json();
+    const data = await response.json();
 
-    if (!geminiResponse.ok) {
-      return res.status(geminiResponse.status).json({
+    if (!response.ok) {
+      return res.status(response.status).json({
         success: false,
-        error: "Gemini API error",
+        error: "OpenRouter API error",
         details: data
       });
     }
 
-    // 4. Get Gemini response
-    const text =
-      data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    const text = data?.choices?.[0]?.message?.content;
 
     if (!text) {
       return res.status(500).json({
         success: false,
-        error: "Gemini returned no response",
+        error: "OpenRouter returned no response",
         raw: data
       });
     }
 
-    // 5. Parse JSON
     let analysis;
 
     try {
-      analysis = JSON.parse(text);
-    } catch (error) {
-      return res.status(500).json({
-        success: false,
-        error: "Gemini returned invalid JSON",
-        raw: text
-      });
+      const cleaned = text
+        .replace(/```json/gi, "")
+        .replace(/```/g, "")
+        .trim();
+
+      analysis = JSON.parse(cleaned);
+    } catch {
+      analysis = {
+        signal: "WAIT",
+        confidence: 0,
+        bias: "NEUTRAL",
+        market_quality: "D",
+        entry: null,
+        stop_loss: null,
+        take_profit: null,
+        risk_reward: null,
+        reasons: [],
+        warnings: ["AI returned invalid JSON"],
+        analysis: text
+      };
     }
 
-    // 6. Final response
     return res.status(200).json({
       success: true,
-      system: "XAU/USD → Twelve Data → SMC V4 → Gemini",
-      model: "gemini-3.6-flash",
+      system: "XAU/USD → Twelve Data → SMC V4 → OpenRouter",
+      model: "openrouter/free",
       timestamp: new Date().toISOString(),
-      smc: smc,
-      analysis: analysis
+      analysis
     });
 
   } catch (error) {
